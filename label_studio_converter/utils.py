@@ -29,48 +29,84 @@ def tokenize(text):
             tok_start += 1
     return out
 
+def trim_span(span):
+    tokens_as_string = span['text']
+    start = span['start']
+    end = span['end']
+    whitespace_at_start = len(tokens_as_string) - len(tokens_as_string.lstrip())
+    start = start + whitespace_at_start
+    trimmed = tokens_as_string.strip()
+    end = start + len(trimmed)
+    label = span['labels'][0]
+    return start,end,label
+
+def next_span_data(spans):
+    if len(spans) == 0:
+        return None,None,None
+    next_span = spans.pop(0)
+    return trim_span(next_span)
 
 def create_tokens_and_tags(text, spans):
-    #tokens_and_idx = tokenize(text) # This function doesn't work properly if text contains multiple whitespaces...
-    token_index_tuples = [token for token in WhitespaceTokenizer().span_tokenize(text)]
-    tokens_and_idx = [(text[start:end], start) for start, end in token_index_tuples]
-    if spans:
-        spans = list(sorted(spans, key=itemgetter('start')))
-        span = spans.pop(0)
-        span_start = span['start']
-        span_end = span['end']-1
-        prefix = 'B-'
-        tokens, tags = [], []
-        for token, token_start in tokens_and_idx:
-            tokens.append(token)
-            token_end = token_start + len(token) #"- 1" - This substraction is wrong. token already uses the index E.g. "Hello" is 0-4
-            token_start_ind = token_start  #It seems like the token start is too early.. for whichever reason
-
-            #if for some reason end of span is missed.. pop the new span (Which is quite probable due to this method)
-            #Attention it seems like span['end'] is the index of first char afterwards. In case the whitespace is part of the
-            #labell we need to subtract one. Otherwise next token won't trigger the span update.. only the token after next..
-            if token_start_ind > span_end:
-                while spans:
-                    span = spans.pop(0)
-                    span_start = span['start']
-                    span_end = span['end'] - 1
-                    prefix = 'B-'
-                    if token_start <= span_end:
-                        break
-
-
-            if not span or token_end < span_start:
-                tags.append('O')
-            elif span_start <= token_end and span_end >= token_start_ind:
-                tags.append(prefix + span['labels'][0])
-                prefix = 'I-'
-            else:
-                tags.append('O')
-    else:
-        tokens = [token for token, _ in tokens_and_idx]
+    if spans is None:
+        tokens = text.split()
         tags = ['O'] * len(tokens)
+        return tokens, tags
 
-    return tokens, tags
+    token_index_tuples = list(WhitespaceTokenizer().span_tokenize(text))
+    sorted_spans = list(sorted(spans, key=itemgetter('start')))
+    entity_start,entity_end,entity_label = next_span_data(sorted_spans)
+    in_multi_token_entity = False
+    tokens = []
+    tags = []
+
+    for tok_start,tok_end in token_index_tuples:
+        full_token=text[tok_start:tok_end]
+        if entity_start is None or tok_end < entity_start:
+            # not in an entity
+            tokens.append(full_token)
+            tags.append("O")
+            continue
+
+        # We are now in an entity
+
+        entity_token = full_token
+
+        if in_multi_token_entity:
+            prefix = 'I-'
+        else:
+            prefix = 'B-'
+
+        before_token = ''
+        if tok_start < entity_start:
+            # entity starts part-way through the token
+            offset = entity_start - tok_start
+            before_token = entity_token[ : offset ]
+            entity_token = entity_token[ offset :]
+
+        after_token = ''
+        if tok_end > entity_end:
+            # entity finishes part-way through the token
+            offset = entity_end - tok_end # will be a negative number
+            after_token = entity_token[ offset : ]
+            entity_token = entity_token[ : offset ]
+
+        if before_token :
+            tokens.append(before_token)
+            tags.append("O")
+        tokens.append(entity_token)
+        tags.append(prefix + entity_label)
+        if after_token:
+            tokens.append(after_token)
+            tags.append("O")
+
+        if entity_end > tok_end:
+            in_multi_token_entity = True
+        else:
+            # Look up the next entity
+            entity_start,entity_end,entity_label = next_span_data(sorted_spans)
+            in_multi_token_entity = False
+
+    return tokens,tags
 
 
 def _get_upload_dir(project_dir=None, upload_dir=None):
